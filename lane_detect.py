@@ -130,15 +130,23 @@ def _fit_cluster_line(cluster, y_bottom, y_top):
     fit = np.polyfit(y_vals, x_vals, deg=1, w=weights)
     m, b = fit
 
-    if abs(m) > 0.65:
+    # Perspective-consistent slope range for this camera view.
+    if m < -0.35 or m > 0.55:
         return None
 
-    # Avoid large extrapolation: draw only where cluster actually has support.
-    supported_top = max(y_top, int(np.percentile(y_vals, 15)))
-    x_bottom = int(m * y_bottom + b)
+    # Avoid large extrapolation: draw only where cluster has support.
+    observed_top = int(min(y_vals))
+    observed_bottom = int(max(y_vals))
+    supported_top = max(y_top, observed_top)
+    supported_bottom = min(y_bottom, observed_bottom)
+
+    if supported_bottom - supported_top < 40:
+        return None
+
+    x_bottom = int(m * supported_bottom + b)
     x_top = int(m * supported_top + b)
 
-    return (x_bottom, int(y_bottom), x_top, int(supported_top))
+    return (x_bottom, int(supported_bottom), x_top, int(supported_top))
 
 
 def _classify_cluster(cluster, y_bottom, y_top):
