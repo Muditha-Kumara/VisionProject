@@ -56,6 +56,11 @@ struct Detection {
     int   class_id;
 };
 
+struct LaneHit {
+    int lane_index;
+    double score;
+};
+
 bool ensure_dir(const string& dir_path) {
     struct stat st;
     if (stat(dir_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
@@ -75,6 +80,40 @@ string class_name(int class_id) {
         case 7: return "truck";
         default: return "vehicle";
     }
+}
+
+Point bottom_center_point(const Detection& d, float scale_x, float scale_y) {
+    int x = (int)((d.cx) * scale_x);
+    int y = (int)((d.cy + d.h * 0.5f) * scale_y);
+    return Point(x, y);
+}
+
+int find_best_lane(const vector<Lane>& lanes, const Point& anchor) {
+    int best_lane = -1;
+    double best_score = -1.0;
+    for (size_t i = 0; i < lanes.size(); ++i) {
+        if (lanes[i].points.size() < 3) continue;
+        double score = pointPolygonTest(lanes[i].points, anchor, true);
+        if (score >= 0.0 && score > best_score) {
+            best_score = score;
+            best_lane = (int)i;
+        }
+    }
+    return best_lane;
+}
+
+string make_vehicle_summary(const vector<int>& obj_counts) {
+    string summary = "Objects: ";
+    bool has_obj = false;
+    for (int cid : VEHICLE_CLASSES) {
+        if (cid >= 0 && cid < (int)obj_counts.size() && obj_counts[cid] > 0) {
+            if (has_obj) summary += ", ";
+            summary += class_name(cid) + "=" + to_string(obj_counts[cid]);
+            has_obj = true;
+        }
+    }
+    if (!has_obj) summary += "none";
+    return summary;
 }
 
 string with_jpg_ext(const string& filename) {
@@ -460,11 +499,15 @@ int main(int argc, char** argv) {
     ofstream csv(OUTPUT_CSV);
     if (!csv.is_open()) { printf("ERROR: Cannot write %s\n", OUTPUT_CSV); return -1; }
     csv << "image,latency_ms";
+    csv << ",avg_latency_ms,detections";
     for (auto& l : lanes) csv << "," << l.name;
     csv << "\n";
 
+    vector<float> latency_history_ms;
+
     // --- 5. Inference loop ---
-    for (const string& img_name : images) {
+    for (size_t img_index = 0; img_index < images.size(); ++img_index) {
+        const string& img_name = images[img_index];
         string path = string(IMAGE_DIR) + "/" + img_name;
         Mat frame = imread(path);
         if (frame.empty()) { printf("WARN: Cannot read %s\n", path.c_str()); continue; }
@@ -505,6 +548,10 @@ int main(int argc, char** argv) {
 
         float infer_ms = (t1.tv_sec - t0.tv_sec) * 1000.0f +
                          (t1.tv_usec - t0.tv_usec) / 1000.0f;
+        latency_history_ms.push_back(infer_ms);
+        float avg_ms = 0.0f;
+        for (float v : latency_history_ms) avg_ms += v;
+        if (!latency_history_ms.empty()) avg_ms /= (float)latency_history_ms.size();
 
         // Post-process
         vector<Detection> dets;
@@ -517,31 +564,33 @@ int main(int argc, char** argv) {
         // Lane counting
         vector<int> counts(lanes.size(), 0);
         vector<int> obj_counts(80, 0);
+        int lane_detection_count = 0;
         float scale_x = (float)orig_w / model_w;
         float scale_y = (float)orig_h / model_h;
 
         for (auto& d : dets) {
+            Point anchor = bottom_center_point(d, scale_x, scale_y);
+            int lane_idx = find_best_lane(lanes, anchor);
+            if (lane_idx < 0) {
+                continue;
+            }
+
+            lane_detection_count++;
             if (d.class_id >= 0 && d.class_id < (int)obj_counts.size()) {
                 obj_counts[d.class_id]++;
             }
-            int cx = (int)(d.cx * scale_x);
-            int cy = (int)(d.cy * scale_y);
+
             int x1 = max(0, (int)((d.cx - d.w * 0.5f) * scale_x));
             int y1 = max(0, (int)((d.cy - d.h * 0.5f) * scale_y));
             int x2 = min(orig_w - 1, (int)((d.cx + d.w * 0.5f) * scale_x));
             int y2 = min(orig_h - 1, (int)((d.cy + d.h * 0.5f) * scale_y));
-            rectangle(annotated, Point(x1, y1), Point(x2, y2), Scalar(0, 255, 255), 2);
+            rectangle(annotated, Point(x1, y1), Point(x2, y2), Scalar(255, 0, 0), 2);
+            circle(annotated, anchor, 4, Scalar(0, 255, 255), -1);
 
-            int lane_idx = -1;
-            for (size_t li = 0; li < lanes.size(); li++) {
-                if (point_in_polygon(cx, cy, lanes[li].points)) {
-                    counts[li]++;
-                    lane_idx = (int)li;
-                }
-            }
+            if (lane_idx >= 0 && lane_idx < (int)counts.size()) counts[lane_idx]++;
             string lbl = class_name(d.class_id) + " " + to_string((int)(d.conf * 100.0f)) + "%";
-            if (lane_idx >= 0) lbl += " " + lanes[lane_idx].name;
-            putText(annotated, lbl, Point(x1, max(15, y1 - 6)), FONT_HERSHEY_SIMPLEX, 0.45, Scalar(0, 255, 255), 1);
+            lbl += " " + lanes[lane_idx].name;
+            putText(annotated, lbl, Point(x1, max(20, y1 - 8)), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 0), 2);
         }
 
         for (size_t li = 0; li < lanes.size(); ++li) {
@@ -550,27 +599,24 @@ int main(int argc, char** argv) {
                 polylines(annotated, polys, true, Scalar(0, 255, 0), 2);
                 Point p = lanes[li].points[0];
                 putText(annotated, lanes[li].name + ": " + to_string(counts[li]),
-                        Point(max(0, p.x), max(18, p.y)), FONT_HERSHEY_SIMPLEX, 0.55, Scalar(0, 255, 0), 2);
+                        Point(max(0, p.x), max(18, p.y)), FONT_HERSHEY_SIMPLEX, 0.65, Scalar(0, 255, 0), 2);
             }
         }
 
-        string obj_summary = "Objects: ";
-        bool has_obj = false;
-        for (int cid : VEHICLE_CLASSES) {
-            if (cid >= 0 && cid < (int)obj_counts.size() && obj_counts[cid] > 0) {
-                if (has_obj) obj_summary += ", ";
-                obj_summary += class_name(cid) + "=" + to_string(obj_counts[cid]);
-                has_obj = true;
-            }
-        }
-        if (!has_obj) obj_summary += "none";
-        putText(annotated, obj_summary, Point(8, 24), FONT_HERSHEY_SIMPLEX, 0.65, Scalar(255, 255, 0), 2);
+        string obj_summary = make_vehicle_summary(obj_counts);
+        char top_line[256];
+        snprintf(top_line, sizeof(top_line), "%zu/%zu | %s", img_index + 1, images.size(), img_name.c_str());
+        putText(annotated, top_line, Point(8, 26), FONT_HERSHEY_SIMPLEX, 0.8, Scalar(0, 255, 0), 2);
+        putText(annotated, obj_summary, Point(8, 54), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(255, 255, 0), 2);
+        char timing_line[256];
+        snprintf(timing_line, sizeof(timing_line), "Current: %.1f ms | Avg: %.1f ms (%.2f FPS)", infer_ms, avg_ms, 1000.0f / max(avg_ms, 1e-6f));
+        putText(annotated, timing_line, Point(8, 82), FONT_HERSHEY_SIMPLEX, 0.65, Scalar(255, 255, 255), 2);
 
         // Log
-        csv << img_name << "," << infer_ms;
+        csv << img_name << "," << infer_ms << "," << avg_ms << "," << lane_detection_count;
         for (size_t li = 0; li < lanes.size(); li++) csv << "," << counts[li];
         csv << "\n";
-        printf("Processed %s - %.1f ms, %zu detections\n", img_name.c_str(), infer_ms, dets.size());
+        printf("Processed %s - %.1f ms (avg %.1f ms), %d lane detections\n", img_name.c_str(), infer_ms, avg_ms, lane_detection_count);
 
         string out_img = string(OUTPUT_IMAGE_DIR) + "/" + with_jpg_ext(img_name);
         if (!save_annotated_image(out_img, annotated)) {

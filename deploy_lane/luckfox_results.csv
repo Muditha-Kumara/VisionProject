@@ -1,6 +1,6 @@
-image,latency_ms,Lane_1,Lane_2,Lane_3
-img00001.jpg,81.465,3,2,4
-img00050.jpg,81.444,3,1,4
-img00100.jpg,81.447,1,0,4
-img00150.jpg,81.429,0,1,7
-img00200.jpg,81.426,1,2,3
+image,latency_ms,avg_latency_ms,detections,Lane_1,Lane_2,Lane_3
+img00001.jpg,81.5,81.5,9,3,2,4
+img00050.jpg,81.511,81.5055,8,3,1,4
+img00100.jpg,81.507,81.506,7,2,1,4
+img00150.jpg,81.486,81.501,8,0,1,7
+img00200.jpg,81.513,81.5034,8,1,2,5
