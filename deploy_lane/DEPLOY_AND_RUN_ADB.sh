@@ -3,6 +3,16 @@ set -euo pipefail
 
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATASET_DIR="${LOCAL_DIR}/dataset"
+PROJECT_ROOT="$(cd "${LOCAL_DIR}/.." && pwd)"
+POLY_SRC="${PROJECT_ROOT}/lane_polygons.csv"
+POLY_DST="${LOCAL_DIR}/lane_polygons.csv"
+
+if [[ -f "${POLY_SRC}" ]]; then
+  if [[ ! -f "${POLY_DST}" || "${POLY_SRC}" -nt "${POLY_DST}" ]]; then
+    cp "${POLY_SRC}" "${POLY_DST}"
+    echo "Updated deploy polygon CSV from project root: ${POLY_SRC} -> ${POLY_DST}"
+  fi
+fi
 
 dataset_fingerprint() {
   local dir="$1"

@@ -10,7 +10,17 @@ fi
 BOARD_IP="$1"
 BOARD_USER="${2:-root}"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${LOCAL_DIR}/.." && pwd)"
+POLY_SRC="${PROJECT_ROOT}/lane_polygons.csv"
+POLY_DST="${LOCAL_DIR}/lane_polygons.csv"
 REMOTE_DIR="/root/deploy_lane"
+
+if [[ -f "${POLY_SRC}" ]]; then
+  if [[ ! -f "${POLY_DST}" || "${POLY_SRC}" -nt "${POLY_DST}" ]]; then
+    cp "${POLY_SRC}" "${POLY_DST}"
+    echo "Updated deploy polygon CSV from project root: ${POLY_SRC} -> ${POLY_DST}"
+  fi
+fi
 
 echo "[1/3] Copying files to ${BOARD_USER}@${BOARD_IP}:${REMOTE_DIR} ..."
 ssh "${BOARD_USER}@${BOARD_IP}" "mkdir -p ${REMOTE_DIR}"
