@@ -82,10 +82,37 @@ string class_name(int class_id) {
     }
 }
 
-Point bottom_center_point(const Detection& d, float scale_x, float scale_y) {
-    int x = (int)((d.cx) * scale_x);
-    int y = (int)((d.cy + d.h * 0.5f) * scale_y);
+Point bottom_center_point(const Detection& d, float scale_x, float scale_y, int offset_x = 0, int offset_y = 0) {
+    int x = offset_x + (int)((d.cx) * scale_x);
+    int y = offset_y + (int)((d.cy + d.h * 0.5f) * scale_y);
     return Point(x, y);
+}
+
+bool compute_lane_roi(const vector<Lane>& lanes, int img_w, int img_h, int padding, Rect& out_roi) {
+    vector<Point> merged_points;
+    for (const auto& lane : lanes) {
+        if (lane.points.size() >= 3) {
+            merged_points.insert(merged_points.end(), lane.points.begin(), lane.points.end());
+        }
+    }
+    if (merged_points.empty()) {
+        return false;
+    }
+
+    Rect r = boundingRect(merged_points);
+    int x1 = max(0, r.x - padding);
+    int y1 = max(0, r.y - padding);
+    int x2 = min(img_w, r.x + r.width + padding);
+    int y2 = min(img_h, r.y + r.height + padding);
+
+    int w = x2 - x1;
+    int h = y2 - y1;
+    if (w < 16 || h < 16) {
+        return false;
+    }
+
+    out_roi = Rect(x1, y1, w, h);
+    return true;
 }
 
 int find_best_lane(const vector<Lane>& lanes, const Point& anchor) {
@@ -516,9 +543,16 @@ int main(int argc, char** argv) {
         int orig_h = frame.rows;
         Mat annotated = frame.clone();
 
+        // Match PC behavior: run inference on merged lane ROI (with padding), then map back.
+        Rect roi_rect;
+        bool has_roi = compute_lane_roi(lanes, orig_w, orig_h, 20, roi_rect);
+        Mat infer_src = has_roi ? frame(roi_rect).clone() : frame;
+        int infer_src_w = infer_src.cols;
+        int infer_src_h = infer_src.rows;
+
         // Preprocess: resize + BGR2RGB
         Mat resized;
-        resize(frame, resized, Size(model_w, model_h));
+        resize(infer_src, resized, Size(model_w, model_h));
         cvtColor(resized, resized, COLOR_BGR2RGB);
 
         int stride_w = input_attr.w_stride > 0 ? input_attr.w_stride : model_w;
@@ -565,11 +599,13 @@ int main(int argc, char** argv) {
         vector<int> counts(lanes.size(), 0);
         vector<int> obj_counts(80, 0);
         int lane_detection_count = 0;
-        float scale_x = (float)orig_w / model_w;
-        float scale_y = (float)orig_h / model_h;
+        float scale_x = (float)infer_src_w / model_w;
+        float scale_y = (float)infer_src_h / model_h;
+        int roi_offset_x = has_roi ? roi_rect.x : 0;
+        int roi_offset_y = has_roi ? roi_rect.y : 0;
 
         for (auto& d : dets) {
-            Point anchor = bottom_center_point(d, scale_x, scale_y);
+            Point anchor = bottom_center_point(d, scale_x, scale_y, roi_offset_x, roi_offset_y);
             int lane_idx = find_best_lane(lanes, anchor);
             if (lane_idx < 0) {
                 continue;
@@ -580,10 +616,10 @@ int main(int argc, char** argv) {
                 obj_counts[d.class_id]++;
             }
 
-            int x1 = max(0, (int)((d.cx - d.w * 0.5f) * scale_x));
-            int y1 = max(0, (int)((d.cy - d.h * 0.5f) * scale_y));
-            int x2 = min(orig_w - 1, (int)((d.cx + d.w * 0.5f) * scale_x));
-            int y2 = min(orig_h - 1, (int)((d.cy + d.h * 0.5f) * scale_y));
+            int x1 = max(0, roi_offset_x + (int)((d.cx - d.w * 0.5f) * scale_x));
+            int y1 = max(0, roi_offset_y + (int)((d.cy - d.h * 0.5f) * scale_y));
+            int x2 = min(orig_w - 1, roi_offset_x + (int)((d.cx + d.w * 0.5f) * scale_x));
+            int y2 = min(orig_h - 1, roi_offset_y + (int)((d.cy + d.h * 0.5f) * scale_y));
             rectangle(annotated, Point(x1, y1), Point(x2, y2), Scalar(255, 0, 0), 2);
             circle(annotated, anchor, 4, Scalar(0, 255, 255), -1);
 
